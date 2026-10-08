@@ -1,0 +1,8 @@
+{
+  "name": "DroidIDE",
+  "description": "Native Android app IDE to create, edit, build, install, and run Jetpack Compose and Android applications on device.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
