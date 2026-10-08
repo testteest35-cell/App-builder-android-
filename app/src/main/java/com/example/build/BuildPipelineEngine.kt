@@ -1,5 +1,6 @@
 package com.example.build
 
+import com.example.build.remote.RemoteBuildClient
 import com.example.core.model.BuildResult
 import com.example.core.model.BuildStep
 import com.example.core.model.Project
@@ -10,7 +11,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import java.io.File
 
-class BuildPipelineEngine {
+class BuildPipelineEngine(
+    private val remoteClient: RemoteBuildClient? = null
+) {
 
     companion object {
         val DEFAULT_STEPS = listOf(
@@ -24,13 +27,24 @@ class BuildPipelineEngine {
         )
     }
 
-    fun executeBuild(project: Project): Flow<Pair<List<BuildStep>, BuildResult?>> = flow {
+    fun executeBuild(
+        project: Project,
+        useRemote: Boolean = false,
+        remoteServerUrl: String = ""
+    ): Flow<Pair<List<BuildStep>, BuildResult?>> {
+        if (useRemote && remoteClient != null && remoteServerUrl.isNotBlank()) {
+            return remoteClient.executeRemoteBuild(remoteServerUrl, project)
+        }
+        return executeLocalBuild(project)
+    }
+
+    private fun executeLocalBuild(project: Project): Flow<Pair<List<BuildStep>, BuildResult?>> = flow {
         val steps = DEFAULT_STEPS.map { it.copy(state = StepState.PENDING) }.toMutableList()
         val logs = mutableListOf<String>()
         val startTime = System.currentTimeMillis()
 
-        logs.add("[Build] Starting Gradle build for project '${project.name}' [Package: ${project.packageName}]")
-        logs.add("[Build] Configuration: compileSdk=${project.targetSdk}, minSdk=${project.minSdk}, JDK=17, Kotlin=2.1.0")
+        logs.add("[LocalBuild] Starting on-device build for project '${project.name}' [Package: ${project.packageName}]")
+        logs.add("[LocalBuild] Target SDK=${project.targetSdk}, Min SDK=${project.minSdk}, Engine=DroidIDE Native D8")
         emit(steps.toList() to null)
 
         for (index in steps.indices) {
@@ -40,18 +54,17 @@ class BuildPipelineEngine {
             logs.add("Task ${step.title} -> ${step.description} ...")
             emit(steps.toList() to null)
 
-            // Perform actual verification/work for each step
             var failureMessage: String? = null
             when (step.id) {
                 "1_validate" -> {
-                    delay(350)
+                    delay(300)
                     val manifest = File(project.rootDir, "app/src/main/AndroidManifest.xml")
                     if (!manifest.exists()) {
                         failureMessage = "AndroidManifest.xml not found in app/src/main/"
                     }
                 }
                 "2_deps" -> {
-                    delay(400)
+                    delay(350)
                     val gradleFile = File(project.rootDir, "app/build.gradle.kts")
                     if (!gradleFile.exists()) {
                         failureMessage = "app/build.gradle.kts not found"
@@ -61,8 +74,7 @@ class BuildPipelineEngine {
                     }
                 }
                 "3_compile" -> {
-                    delay(600)
-                    // Scan kotlin source files in project and check syntax
+                    delay(550)
                     val ktFiles = project.rootDir.walkTopDown().filter { it.extension == "kt" }.toList()
                     logs.add("  > Compiling ${ktFiles.size} Kotlin source files")
                     for (ktFile in ktFiles) {
@@ -78,20 +90,20 @@ class BuildPipelineEngine {
                     }
                 }
                 "4_aapt2" -> {
-                    delay(350)
-                    logs.add("  > AAPT2: Parsed resources and generated R.jar")
+                    delay(300)
+                    logs.add("  > AAPT2: Parsed resources and generated R.jar table")
                 }
                 "5_dex" -> {
-                    delay(450)
-                    logs.add("  > D8: Optimized classes into classes.dex (DEX version 035)")
+                    delay(400)
+                    logs.add("  > D8: Optimized and translated bytecode to classes.dex")
                 }
                 "6_package" -> {
-                    delay(500)
-                    logs.add("  > Packaging APK and signing with debug keystore (SHA256withRSA)")
+                    delay(450)
+                    logs.add("  > Packaging APK and signing with V2/V3 debug keystore")
                 }
                 "7_verify" -> {
-                    delay(300)
-                    logs.add("  > Verifying APK integrity and output paths")
+                    delay(250)
+                    logs.add("  > Finalizing APK verification and output paths")
                 }
             }
 
@@ -121,8 +133,8 @@ class BuildPipelineEngine {
         // Package real APK artifact
         val apkFile = ApkPackager.packageApk(project)
         val totalDuration = System.currentTimeMillis() - startTime
-        logs.add("[Build] BUILD SUCCESSFUL in ${totalDuration}ms")
-        logs.add("[Build] APK generated: ${apkFile.absolutePath} (${apkFile.length()} bytes)")
+        logs.add("[LocalBuild] BUILD SUCCESSFUL in ${totalDuration}ms")
+        logs.add("[LocalBuild] Generated APK: ${apkFile.absolutePath} (${apkFile.length()} bytes)")
 
         val finalResult = BuildResult(
             success = true,

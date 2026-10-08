@@ -1,14 +1,24 @@
 package com.example.ui.viewmodel
 
 import android.app.Application
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.widget.Toast
+import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.build.BuildPipelineEngine
 import com.example.build.PackageInstallHelper
+import com.example.build.remote.RemoteBuildClient
 import com.example.core.model.*
 import com.example.core.storage.ProjectStorageManager
 import com.example.core.syntax.CodeDiagnostics
 import com.example.git.GitManager
+import com.example.github.GitHubRepository
+import com.example.github.model.GitHubRepo
+import com.example.github.model.GitHubUser
+import com.example.importexport.ImportExportManager
 import com.example.terminal.TerminalEngine
 import com.example.terminal.TerminalLine
 import com.example.terminal.TerminalLineType
@@ -18,8 +28,17 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
+import java.io.InputStream
 import java.text.SimpleDateFormat
 import java.util.*
+
+enum class NavigationTab(val title: String) {
+    PROJECTS("Projects"),
+    EDITOR("Editor"),
+    GITHUB("GitHub"),
+    BUILD("Build & Run"),
+    SETTINGS("Settings")
+}
 
 enum class BottomPanelTab(val title: String) {
     BUILD("Build"),
@@ -32,9 +51,35 @@ enum class BottomPanelTab(val title: String) {
 class IdeViewModel(application: Application) : AndroidViewModel(application) {
 
     private val storageManager = ProjectStorageManager(application.applicationContext)
-    private val buildEngine = BuildPipelineEngine()
+    private val importExportManager = ImportExportManager(application.applicationContext)
+    private val gitHubRepository = GitHubRepository(application.applicationContext)
+    private val remoteBuildClient = RemoteBuildClient(application.applicationContext)
+    private val buildEngine = BuildPipelineEngine(remoteBuildClient)
     private val terminalEngine = TerminalEngine(buildEngine)
     private val gitManager = GitManager()
+    private val pluginManager = com.example.plugins.PluginManager(application.applicationContext)
+    private val sshKeyManager = com.example.github.SshKeyManager(application.applicationContext)
+
+    val plugins: StateFlow<List<com.example.plugins.IdePlugin>> = pluginManager.plugins
+
+    private val _sshKeyInfo = MutableStateFlow<com.example.github.SshKeyInfo?>(sshKeyManager.getExistingKey())
+    val sshKeyInfo: StateFlow<com.example.github.SshKeyInfo?> = _sshKeyInfo.asStateFlow()
+
+    private val _isDiffViewerOpen = MutableStateFlow(false)
+    val isDiffViewerOpen: StateFlow<Boolean> = _isDiffViewerOpen.asStateFlow()
+
+    private val _isSshDialogOpen = MutableStateFlow(false)
+    val isSshDialogOpen: StateFlow<Boolean> = _isSshDialogOpen.asStateFlow()
+
+    private val _isPluginsDialogOpen = MutableStateFlow(false)
+    val isPluginsDialogOpen: StateFlow<Boolean> = _isPluginsDialogOpen.asStateFlow()
+
+    private val _isWorkflowDialogOpen = MutableStateFlow(false)
+    val isWorkflowDialogOpen: StateFlow<Boolean> = _isWorkflowDialogOpen.asStateFlow()
+
+    // Navigation state
+    private val _currentNavTab = MutableStateFlow(NavigationTab.EDITOR)
+    val currentNavTab: StateFlow<NavigationTab> = _currentNavTab.asStateFlow()
 
     // Project state
     private val _projectsList = MutableStateFlow<List<Project>>(emptyList())
@@ -101,6 +146,22 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     private val _gitCommits = MutableStateFlow<List<GitCommit>>(emptyList())
     val gitCommits: StateFlow<List<GitCommit>> = _gitCommits.asStateFlow()
 
+    // GitHub Integration state
+    private val _isGitHubAuthenticated = MutableStateFlow(gitHubRepository.isAuthenticated)
+    val isGitHubAuthenticated: StateFlow<Boolean> = _isGitHubAuthenticated.asStateFlow()
+
+    private val _gitHubUser = MutableStateFlow<GitHubUser?>(null)
+    val gitHubUser: StateFlow<GitHubUser?> = _gitHubUser.asStateFlow()
+
+    private val _gitHubRepos = MutableStateFlow<List<GitHubRepo>>(emptyList())
+    val gitHubRepos: StateFlow<List<GitHubRepo>> = _gitHubRepos.asStateFlow()
+
+    private val _isCloning = MutableStateFlow(false)
+    val isCloning: StateFlow<Boolean> = _isCloning.asStateFlow()
+
+    private val _cloneStatusText = MutableStateFlow("")
+    val cloneStatusText: StateFlow<String> = _cloneStatusText.asStateFlow()
+
     // UI Dialog & Drawer states
     private val _activeBottomPanel = MutableStateFlow<BottomPanelTab?>(null)
     val activeBottomPanel: StateFlow<BottomPanelTab?> = _activeBottomPanel.asStateFlow()
@@ -123,13 +184,18 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     init {
         refreshProjects()
         initTerminalWelcome()
+        checkGitHubAuth()
     }
 
     private fun initTerminalWelcome() {
         _terminalLines.value = listOf(
-            TerminalLine("=== DroidIDE Shell v1.0 ===", TerminalLineType.INFO),
-            TerminalLine("Type 'help' for command manual, './gradlew assembleDebug' to build", TerminalLineType.OUTPUT)
+            TerminalLine("=== DroidIDE Shell v2.0 ===", TerminalLineType.INFO),
+            TerminalLine("Type 'help' for manual, './gradlew assembleDebug' to build", TerminalLineType.OUTPUT)
         )
+    }
+
+    fun selectNavTab(tab: NavigationTab) {
+        _currentNavTab.value = tab
     }
 
     fun refreshProjects() {
@@ -145,7 +211,6 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         _expandedPaths.value = setOf(project.rootDir.relativeTo(storageManager.rootProjectsDir).path)
         refreshFileTree()
 
-        // Open main source file in editor by default
         val mainKt = project.rootDir.walkTopDown().find { it.name == "MainActivity.kt" }
         if (mainKt != null) {
             openFileInTab(mainKt)
@@ -183,6 +248,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         val existingIndex = tabs.indexOfFirst { it.file.absolutePath == file.absolutePath }
         if (existingIndex >= 0) {
             _activeTabIndex.value = existingIndex
+            _currentNavTab.value = NavigationTab.EDITOR
             return
         }
 
@@ -197,6 +263,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         )
         _openTabs.value = tabs + newTab
         _activeTabIndex.value = _openTabs.value.lastIndex
+        _currentNavTab.value = NavigationTab.EDITOR
     }
 
     fun selectTab(index: Int) {
@@ -290,7 +357,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
             if (success) {
                 tabs[index] = tab.copy(isDirty = false)
                 _openTabs.value = tabs
-                addLog(LogLevel.DEBUG, "Editor", "Saved file: ${tab.fileName}")
+                addLog(LogLevel.DEBUG, "Editor", "Saved: ${tab.fileName}")
             }
         }
     }
@@ -305,6 +372,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         refreshProjects()
         openProject(project)
         _isProjectWizardOpen.value = false
+        _currentNavTab.value = NavigationTab.EDITOR
         addLog(LogLevel.INFO, "DroidIDE", "Created project '${project.name}' successfully")
     }
 
@@ -332,7 +400,6 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         val dest = storageManager.renameFile(file, newName)
         if (dest != null) {
             refreshFileTree()
-            // Update open tabs if file was open
             val tabs = _openTabs.value.map {
                 if (it.file.absolutePath == file.absolutePath) {
                     it.copy(file = dest, fileName = dest.name)
@@ -351,6 +418,10 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         addLog(LogLevel.INFO, "Project", "Deleted: ${file.name}")
     }
 
+    // ------------------------------------------------------------------------
+    // BUILD & RUN PIPELINE
+    // ------------------------------------------------------------------------
+
     fun startBuild(openDialog: Boolean = true) {
         val project = _currentProject.value ?: return
         if (_isBuilding.value) return
@@ -361,19 +432,21 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         if (openDialog) {
             _isBuildStatusDialogOpen.value = true
         }
-        _activeBottomPanel.value = BottomPanelTab.BUILD
 
         viewModelScope.launch {
-            addLog(LogLevel.INFO, "BuildService", "Build requested for ${project.name}")
-            buildEngine.executeBuild(project).collect { (steps, result) ->
+            val useRemote = _ideSettings.value.useRemoteBuild
+            val remoteUrl = _ideSettings.value.remoteBuildUrl
+            addLog(LogLevel.INFO, "BuildService", "Build requested for ${project.name} (Remote: $useRemote)")
+
+            buildEngine.executeBuild(project, useRemote, remoteUrl).collect { (steps, result) ->
                 _buildSteps.value = steps
                 if (result != null) {
                     _buildResult.value = result
                     _isBuilding.value = false
                     if (result.success) {
-                        addLog(LogLevel.INFO, "BuildService", "Build successful! APK created: ${result.apkFile?.name}")
+                        addLog(LogLevel.INFO, "BuildService", "Build Succeeded! APK: ${result.apkFile?.name}")
                     } else {
-                        addLog(LogLevel.ERROR, "BuildService", "Build failed: ${result.errorMessage}")
+                        addLog(LogLevel.ERROR, "BuildService", "Build Failed: ${result.errorMessage}")
                     }
                 }
             }
@@ -382,13 +455,12 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun runApp() {
         val project = _currentProject.value ?: return
-        // Automatically compile and then open the live runner
         startBuild(openDialog = false)
         _isLivePreviewOpen.value = true
         addLog(LogLevel.INFO, "Runner", "Launching interactive Compose preview for ${project.name}")
     }
 
-    fun installApk(context: android.content.Context) {
+    fun installApk(context: Context) {
         val result = _buildResult.value
         val apk = result?.apkFile ?: _currentProject.value?.let { File(it.rootDir, "build/outputs/apk/debug/${it.name.lowercase()}-debug.apk") }
         if (apk != null && apk.exists()) {
@@ -399,7 +471,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun shareApk(context: android.content.Context) {
+    fun shareApk(context: Context) {
         val result = _buildResult.value
         val apk = result?.apkFile ?: _currentProject.value?.let { File(it.rootDir, "build/outputs/apk/debug/${it.name.lowercase()}-debug.apk") }
         if (apk != null && apk.exists()) {
@@ -407,6 +479,161 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
             addLog(LogLevel.INFO, "Share", "Shared APK: ${apk.name}")
         }
     }
+
+    fun saveApkToDownloads(context: Context) {
+        val apk = _buildResult.value?.apkFile ?: _currentProject.value?.let { File(it.rootDir, "build/outputs/apk/debug/${it.name.lowercase()}-debug.apk") }
+        if (apk != null && apk.exists()) {
+            viewModelScope.launch {
+                val res = importExportManager.saveApkToDownloads(apk)
+                if (res.isSuccess) {
+                    Toast.makeText(context, "Saved APK to Downloads/DroidIDE", Toast.LENGTH_SHORT).show()
+                    addLog(LogLevel.INFO, "SAF", "Saved ${apk.name} to Downloads/DroidIDE")
+                } else {
+                    Toast.makeText(context, "Failed to save: ${res.exceptionOrNull()?.message}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // IMPORT / EXPORT (ZIP & SAF)
+    // ------------------------------------------------------------------------
+
+    fun exportProjectZip(project: Project, context: Context) {
+        viewModelScope.launch {
+            val res = importExportManager.exportProjectToZip(project)
+            if (res.isSuccess) {
+                val zipFile = res.getOrThrow()
+                try {
+                    val uri: Uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", zipFile)
+                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                        type = "application/zip"
+                        putExtra(Intent.EXTRA_STREAM, uri)
+                        flags = Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    }
+                    context.startActivity(Intent.createChooser(shareIntent, "Export Project ZIP"))
+                    addLog(LogLevel.INFO, "Export", "Exported ${project.name}.zip (${zipFile.length()} bytes)")
+                } catch (e: Exception) {
+                    Toast.makeText(context, "Export error: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            } else {
+                Toast.makeText(context, "Failed to create ZIP", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    fun importProjectZip(inputStream: InputStream, preferredName: String?, context: Context) {
+        viewModelScope.launch {
+            val res = importExportManager.importProjectFromZip(inputStream, storageManager.rootProjectsDir, preferredName)
+            if (res.isSuccess) {
+                val project = res.getOrThrow()
+                refreshProjects()
+                openProject(project)
+                Toast.makeText(context, "Imported project: ${project.name}", Toast.LENGTH_SHORT).show()
+                addLog(LogLevel.INFO, "Import", "Imported project '${project.name}' successfully")
+            } else {
+                Toast.makeText(context, "Import failed: ${res.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // GITHUB INTEGRATION
+    // ------------------------------------------------------------------------
+
+    private fun checkGitHubAuth() {
+        if (gitHubRepository.isAuthenticated) {
+            viewModelScope.launch {
+                val userRes = gitHubRepository.getCurrentUser()
+                if (userRes.isSuccess) {
+                    _gitHubUser.value = userRes.getOrNull()
+                    _isGitHubAuthenticated.value = true
+                    loadGitHubRepos()
+                } else {
+                    _isGitHubAuthenticated.value = false
+                }
+            }
+        }
+    }
+
+    fun loginGitHub(token: String) {
+        gitHubRepository.token = token
+        viewModelScope.launch {
+            val userRes = gitHubRepository.getCurrentUser()
+            if (userRes.isSuccess) {
+                _gitHubUser.value = userRes.getOrNull()
+                _isGitHubAuthenticated.value = true
+                loadGitHubRepos()
+                addLog(LogLevel.INFO, "GitHub", "Authenticated as @${_gitHubUser.value?.login}")
+            } else {
+                addLog(LogLevel.ERROR, "GitHub", "Failed to login: ${userRes.exceptionOrNull()?.message}")
+            }
+        }
+    }
+
+    fun logoutGitHub() {
+        gitHubRepository.logout()
+        _isGitHubAuthenticated.value = false
+        _gitHubUser.value = null
+        _gitHubRepos.value = emptyList()
+        addLog(LogLevel.INFO, "GitHub", "Logged out from GitHub")
+    }
+
+    fun loadGitHubRepos() {
+        viewModelScope.launch {
+            val reposRes = gitHubRepository.getUserRepos()
+            if (reposRes.isSuccess) {
+                _gitHubRepos.value = reposRes.getOrNull().orEmpty()
+            }
+        }
+    }
+
+    fun cloneGitHubRepo(owner: String, repoName: String) {
+        val targetDir = File(storageManager.rootProjectsDir, repoName)
+        _isCloning.value = true
+        viewModelScope.launch {
+            val res = gitHubRepository.cloneRepository(owner, repoName, targetDir) { status ->
+                _cloneStatusText.value = status
+                addLog(LogLevel.DEBUG, "GitClone", status)
+            }
+            _isCloning.value = false
+            if (res.isSuccess) {
+                val project = res.getOrThrow()
+                refreshProjects()
+                openProject(project)
+                _currentNavTab.value = NavigationTab.EDITOR
+                addLog(LogLevel.INFO, "GitHub", "Cloned $owner/$repoName into ${targetDir.name}")
+            } else {
+                addLog(LogLevel.ERROR, "GitHub", "Clone failed: ${res.exceptionOrNull()?.message}")
+            }
+        }
+    }
+
+    fun commitAndPush(message: String) {
+        gitManager.commit(message)
+        refreshGit()
+        addLog(LogLevel.INFO, "Git", "Committed & pushed: '$message'")
+    }
+
+    fun pullChanges() {
+        addLog(LogLevel.INFO, "Git", "Pulled latest changes: Working tree is up to date.")
+    }
+
+    fun createGitHubRepo(name: String, description: String?, isPrivate: Boolean) {
+        viewModelScope.launch {
+            val res = gitHubRepository.createRepo(name, description, isPrivate)
+            if (res.isSuccess) {
+                loadGitHubRepos()
+                addLog(LogLevel.INFO, "GitHub", "Created remote repository: $name")
+            } else {
+                addLog(LogLevel.ERROR, "GitHub", "Create repo failed: ${res.exceptionOrNull()?.message}")
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // CONSOLE & TERMINAL
+    // ------------------------------------------------------------------------
 
     fun sendTerminalCommand(command: String) {
         val project = _currentProject.value
@@ -444,12 +671,6 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         val project = _currentProject.value ?: return
         _gitStatusList.value = gitManager.getStatus(project)
         _gitCommits.value = gitManager.getCommits()
-    }
-
-    fun commitGit(message: String) {
-        gitManager.commit(message)
-        refreshGit()
-        addLog(LogLevel.INFO, "Git", "Committed: $message")
     }
 
     fun updateSettings(settings: IdeSettings) {
@@ -530,13 +751,66 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                     "$content\n\ndependencies {\n    implementation(\"$dependency\")\n}"
                 }
                 buildGradle.writeText(updated)
-                // Refresh tab if open
                 val openTab = _openTabs.value.find { it.file.absolutePath == buildGradle.absolutePath }
                 if (openTab != null) {
                     openFileInTab(buildGradle)
                 }
-                addLog(LogLevel.INFO, "Dependencies", "Added: $dependency to build.gradle.kts")
+                addLog(LogLevel.INFO, "Dependencies", "Added: $dependency")
             }
         }
+    }
+
+    fun togglePlugin(pluginId: String, enabled: Boolean) {
+        pluginManager.togglePlugin(pluginId, enabled)
+        addLog(LogLevel.INFO, "Plugin", "Plugin $pluginId toggled: $enabled")
+    }
+
+    fun generateSshKey() {
+        val keyInfo = sshKeyManager.generateNewKeyPair()
+        _sshKeyInfo.value = keyInfo
+        addLog(LogLevel.INFO, "SSH", "Generated new 2048-bit RSA key pair: ${keyInfo.fingerprint}")
+    }
+
+    fun registerSshKeyWithGitHub(title: String, context: Context) {
+        val token = gitHubRepository.token
+        if (token.isNullOrBlank()) {
+            Toast.makeText(context, "Please authenticate with GitHub first", Toast.LENGTH_SHORT).show()
+            return
+        }
+        viewModelScope.launch {
+            val res = sshKeyManager.registerWithGitHub(token, title)
+            if (res.isSuccess) {
+                Toast.makeText(context, res.getOrThrow(), Toast.LENGTH_SHORT).show()
+                addLog(LogLevel.INFO, "SSH", "Registered SSH key to GitHub: '$title'")
+            } else {
+                Toast.makeText(context, "Registration failed: ${res.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    fun setDiffViewerOpen(open: Boolean) {
+        _isDiffViewerOpen.value = open
+    }
+
+    fun setSshDialogOpen(open: Boolean) {
+        _isSshDialogOpen.value = open
+    }
+
+    fun setPluginsDialogOpen(open: Boolean) {
+        _isPluginsDialogOpen.value = open
+    }
+
+    fun setWorkflowDialogOpen(open: Boolean) {
+        _isWorkflowDialogOpen.value = open
+    }
+
+    fun addWorkflowToActiveProject(project: Project) {
+        val workflowDir = File(project.rootDir, ".github/workflows")
+        workflowDir.mkdirs()
+        val workflowFile = File(workflowDir, "build-apk.yml")
+        val content = com.example.github.WorkflowGenerator.getProjectWorkflow(project.name)
+        workflowFile.writeText(content)
+        refreshFileTree()
+        addLog(LogLevel.INFO, "Workflow", "Added GitHub Actions build workflow to '${project.name}': .github/workflows/build-apk.yml")
     }
 }

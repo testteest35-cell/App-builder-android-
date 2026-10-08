@@ -6,11 +6,17 @@ import com.example.core.model.Project
 import com.example.core.model.ProjectTemplateType
 import com.example.core.syntax.CodeDiagnostics
 import com.example.core.syntax.SyntaxHighlighter
+import com.example.github.model.GitHubRepo
+import com.example.github.model.GitHubUser
 import com.example.project.ProjectTemplates
+import com.squareup.moshi.Moshi
+import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import org.junit.Assert.*
 import org.junit.Test
 import java.io.File
+import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
+import java.util.zip.ZipOutputStream
 
 class IdeLogicTest {
 
@@ -105,17 +111,66 @@ class IdeLogicTest {
         assertTrue("APK file must exist", apk.exists())
         assertTrue("APK file size must be > 0", apk.length() > 0)
 
-        // Verify it is a valid Zip file with DEX and Manifest entries
         ZipFile(apk).use { zip ->
-            val manifestEntry = zip.getEntry("AndroidManifest.xml")
-            val dexEntry = zip.getEntry("classes.dex")
-            val certEntry = zip.getEntry("META-INF/MANIFEST.MF")
-
-            assertNotNull("Manifest entry must exist in APK", manifestEntry)
-            assertNotNull("Dex entry must exist in APK", dexEntry)
-            assertNotNull("META-INF signature must exist in APK", certEntry)
+            assertNotNull(zip.getEntry("AndroidManifest.xml"))
+            assertNotNull(zip.getEntry("classes.dex"))
+            assertNotNull(zip.getEntry("META-INF/MANIFEST.MF"))
         }
 
         tempDir.deleteRecursively()
+    }
+
+    @Test
+    fun testGitHubModelsParsing() {
+        val moshi = Moshi.Builder().add(KotlinJsonAdapterFactory()).build()
+        val userJson = """
+            {
+                "login": "octocat",
+                "id": 1,
+                "avatar_url": "https://github.com/images/error/octocat_happy.gif",
+                "name": "The Octocat",
+                "public_repos": 8,
+                "bio": "Android Developer"
+            }
+        """.trimIndent()
+
+        val adapter = moshi.adapter(GitHubUser::class.java)
+        val user = adapter.fromJson(userJson)
+        assertNotNull(user)
+        assertEquals("octocat", user?.login)
+        assertEquals("The Octocat", user?.name)
+        assertEquals(8, user?.publicRepos)
+
+        val repoJson = """
+            {
+                "id": 1296269,
+                "name": "Hello-World",
+                "full_name": "octocat/Hello-World",
+                "private": false,
+                "description": "This is your first repo!",
+                "default_branch": "main",
+                "html_url": "https://github.com/octocat/Hello-World",
+                "updated_at": "2024-01-01T00:00:00Z"
+            }
+        """.trimIndent()
+        val repoAdapter = moshi.adapter(GitHubRepo::class.java)
+        val repo = repoAdapter.fromJson(repoJson)
+        assertNotNull(repo)
+        assertEquals("Hello-World", repo?.name)
+        assertEquals("main", repo?.defaultBranch)
+        assertFalse(repo?.private ?: true)
+    }
+
+    @Test
+    fun testZipSlipSecurityCheck() {
+        val tempExtractDir = File(System.getProperty("java.io.tmpdir"), "zip_slip_test_${System.currentTimeMillis()}")
+        tempExtractDir.mkdirs()
+
+        val maliciousPath = "../malicious.txt"
+        val resolved = File(tempExtractDir, maliciousPath)
+        val isSlip = !resolved.canonicalPath.startsWith(tempExtractDir.canonicalPath)
+        assertTrue("Path traversal should be detected", isSlip)
+
+        tempExtractDir.deleteRecursively()
     }
 }

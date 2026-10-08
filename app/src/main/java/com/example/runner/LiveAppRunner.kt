@@ -22,11 +22,21 @@ import androidx.compose.ui.unit.sp
 import com.example.core.model.LogLevel
 import com.example.core.model.Project
 import com.example.core.model.ProjectTemplateType
+import com.example.ui.theme.IdeCyan
+import com.example.ui.theme.IdeGreen
+import com.example.ui.theme.JetBrainsMonoFontFamily
 
 data class TaskDemoItem(
     val id: String,
     val title: String,
     val isDone: Boolean = false
+)
+
+data class LayoutNode(
+    val name: String,
+    val type: String,
+    val depth: Int,
+    val attributes: Map<String, String>
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -37,7 +47,10 @@ fun LiveAppRunnerView(
     onEmitLog: (LogLevel, String, String) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    // Determine the template mode
+    var isLandscape by remember { mutableStateOf(false) }
+    var isDarkModePreview by remember { mutableStateOf(true) }
+    var showInspector by remember { mutableStateOf(false) }
+
     val template = project.template
 
     LaunchedEffect(project.id) {
@@ -49,103 +62,233 @@ fun LiveAppRunnerView(
         onEmitLog(LogLevel.DEBUG, "ComposeRuntime", "Initial composition completed for ${project.name}")
     }
 
-    // Realistic Android Device Mockup Frame
-    Card(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(12.dp),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF111315)),
-        border = CardDefaults.outlinedCardBorder().copy(width = 2.dp)
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Column(
-            modifier = Modifier.fillMaxWidth()
+        // Runner Controls Strip
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            // Android Status Bar
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "09:41",
-                    color = Color.White,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-                // Center Camera Hole
-                Box(
-                    modifier = Modifier
-                        .size(10.dp)
-                        .clip(CircleShape)
-                        .background(Color.Black)
-                )
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalAlignment = Alignment.CenterVertically
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Orientation toggle
+                IconButton(
+                    onClick = { isLandscape = !isLandscape },
+                    modifier = Modifier.size(32.dp)
                 ) {
                     Icon(
-                        Icons.Default.Wifi,
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(14.dp)
+                        imageVector = if (isLandscape) Icons.Default.ScreenRotation else Icons.Default.ScreenLockPortrait,
+                        contentDescription = "Rotate",
+                        tint = IdeCyan,
+                        modifier = Modifier.size(18.dp)
                     )
+                }
+
+                // Dark/Light toggle
+                IconButton(
+                    onClick = { isDarkModePreview = !isDarkModePreview },
+                    modifier = Modifier.size(32.dp)
+                ) {
                     Icon(
-                        Icons.Default.BatteryFull,
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(14.dp)
+                        imageVector = if (isDarkModePreview) Icons.Default.DarkMode else Icons.Default.LightMode,
+                        contentDescription = "Theme",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp)
                     )
                 }
+
+                // Layout Inspector Toggle
+                FilterChip(
+                    selected = showInspector,
+                    onClick = { showInspector = !showInspector },
+                    label = { Text("Inspector", fontSize = 11.sp) },
+                    modifier = Modifier.height(28.dp)
+                )
             }
 
-            // Screen Viewport Container
-            Box(
+            Badge(containerColor = IdeGreen) {
+                Text("API 35 • Running", fontSize = 10.sp)
+            }
+        }
+
+        if (showInspector) {
+            // Compose Hierarchy Inspector Panel
+            ComposeHierarchyInspector(
+                template = template,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 380.dp, max = 520.dp)
-                    .background(MaterialTheme.colorScheme.background)
-            ) {
-                when (template) {
-                    ProjectTemplateType.COMPOSE_COUNTER -> {
-                        CounterInteractiveScreen(
-                            projectName = project.name,
-                            codeContent = codeContent,
-                            onEmitLog = onEmitLog
-                        )
-                    }
-                    ProjectTemplateType.COMPOSE_NOTES -> {
-                        TaskCraftInteractiveScreen(
-                            projectName = project.name,
-                            onEmitLog = onEmitLog
-                        )
-                    }
-                    else -> {
-                        EmptyComposeInteractiveScreen(
-                            projectName = project.name,
-                            codeContent = codeContent,
-                            onEmitLog = onEmitLog
-                        )
+                    .padding(horizontal = 16.dp, vertical = 6.dp)
+            )
+        }
+
+        // Realistic Android Device Mockup Frame
+        val frameWidth = if (isLandscape) 520.dp else 340.dp
+        val frameHeight = if (isLandscape) 320.dp else 480.dp
+
+        Card(
+            modifier = Modifier
+                .width(frameWidth)
+                .padding(8.dp),
+            shape = RoundedCornerShape(28.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF111315)),
+            border = CardDefaults.outlinedCardBorder().copy(width = 2.dp)
+        ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                // Android Status Bar
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "10:30",
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    // Center Camera Punch Hole
+                    Box(
+                        modifier = Modifier
+                            .size(10.dp)
+                            .clip(CircleShape)
+                            .background(Color.Black)
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Wifi, contentDescription = null, tint = Color.White, modifier = Modifier.size(13.dp))
+                        Icon(Icons.Default.BatteryFull, contentDescription = null, tint = Color.White, modifier = Modifier.size(13.dp))
                     }
                 }
-            }
 
-            // Android Navigation Bar (Gesture Pill)
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 8.dp),
-                contentAlignment = Alignment.Center
-            ) {
+                // Screen Viewport Container
+                val previewThemeColors = if (isDarkModePreview) {
+                    darkColorScheme()
+                } else {
+                    lightColorScheme()
+                }
+
+                MaterialTheme(colorScheme = previewThemeColors) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(frameHeight)
+                            .background(MaterialTheme.colorScheme.background)
+                    ) {
+                        when (template) {
+                            ProjectTemplateType.COMPOSE_COUNTER -> {
+                                CounterInteractiveScreen(
+                                    projectName = project.name,
+                                    codeContent = codeContent,
+                                    onEmitLog = onEmitLog
+                                )
+                            }
+                            ProjectTemplateType.COMPOSE_NOTES -> {
+                                TaskCraftInteractiveScreen(
+                                    projectName = project.name,
+                                    onEmitLog = onEmitLog
+                                )
+                            }
+                            else -> {
+                                EmptyComposeInteractiveScreen(
+                                    projectName = project.name,
+                                    codeContent = codeContent,
+                                    onEmitLog = onEmitLog
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Android Navigation Bar (Gesture Pill)
                 Box(
                     modifier = Modifier
-                        .width(72.dp)
-                        .height(4.dp)
-                        .clip(RoundedCornerShape(2.dp))
-                        .background(Color.White.copy(alpha = 0.6f))
-                )
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .width(72.dp)
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(Color.White.copy(alpha = 0.6f))
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ComposeHierarchyInspector(template: ProjectTemplateType, modifier: Modifier = Modifier) {
+    val hierarchy = remember(template) {
+        when (template) {
+            ProjectTemplateType.COMPOSE_COUNTER -> listOf(
+                LayoutNode("MaterialTheme", "Theme", 0, mapOf("dynamicColor" to "true")),
+                LayoutNode("Surface", "Layout", 1, mapOf("modifier" to "fillMaxSize()")),
+                LayoutNode("Column", "Layout", 2, mapOf("verticalArrangement" to "Center")),
+                LayoutNode("Text", "Component", 3, mapOf("text" to "\"Reactive Counter\"", "color" to "Primary")),
+                LayoutNode("Box", "Layout", 3, mapOf("shape" to "CircleShape", "size" to "140.dp")),
+                LayoutNode("AnimatedContent", "Animation", 4, mapOf("targetState" to "count")),
+                LayoutNode("Row", "Layout", 3, mapOf("horizontalArrangement" to "spacedBy(12.dp)")),
+                LayoutNode("Button", "Component", 4, mapOf("text" to "\"Increment\"", "onClick" to "count++"))
+            )
+            ProjectTemplateType.COMPOSE_NOTES -> listOf(
+                LayoutNode("Scaffold", "Layout", 0, mapOf("topBar" to "TopAppBar")),
+                LayoutNode("Column", "Layout", 1, mapOf("modifier" to "padding(16.dp)")),
+                LayoutNode("Row", "Layout", 2, mapOf("children" to "TextField + Button")),
+                LayoutNode("LazyColumn", "List", 2, mapOf("verticalArrangement" to "spacedBy(6.dp)")),
+                LayoutNode("ElevatedCard", "Component", 3, mapOf("elevation" to "2.dp")),
+                LayoutNode("Checkbox", "Component", 4, mapOf("checked" to "task.isDone"))
+            )
+            else -> listOf(
+                LayoutNode("MaterialTheme", "Theme", 0, mapOf("colorScheme" to "M3")),
+                LayoutNode("Box", "Layout", 1, mapOf("contentAlignment" to "Center")),
+                LayoutNode("Text", "Component", 2, mapOf("style" to "headlineMedium"))
+            )
+        }
+    }
+
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = RoundedCornerShape(10.dp),
+        modifier = modifier
+    ) {
+        Column(modifier = Modifier.padding(10.dp)) {
+            Text("Compose Component Hierarchy", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            Spacer(modifier = Modifier.height(4.dp))
+            LazyColumn(modifier = Modifier.heightIn(max = 120.dp)) {
+                items(hierarchy) { node ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = (node.depth * 12).dp, top = 2.dp, bottom = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "• ${node.name}",
+                            fontFamily = JetBrainsMonoFontFamily,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = node.attributes.entries.joinToString(", ") { "${it.key}: ${it.value}" },
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1
+                        )
+                    }
+                }
             }
         }
     }
@@ -160,7 +303,6 @@ private fun CounterInteractiveScreen(
     var count by remember { mutableIntStateOf(0) }
     var taps by remember { mutableIntStateOf(0) }
 
-    // Parse customized title if edited in code
     val customTitle = remember(codeContent) {
         val match = Regex("Text\\(\\s*text\\s*=\\s*\"([^\"]+)\"").find(codeContent)
         match?.groupValues?.get(1) ?: projectName
@@ -188,7 +330,7 @@ private fun CounterInteractiveScreen(
 
         Box(
             modifier = Modifier
-                .size(140.dp)
+                .size(130.dp)
                 .clip(CircleShape)
                 .background(MaterialTheme.colorScheme.primaryContainer),
             contentAlignment = Alignment.Center
@@ -196,7 +338,7 @@ private fun CounterInteractiveScreen(
             AnimatedContent(targetState = count, label = "counter") { value ->
                 Text(
                     text = "$value",
-                    fontSize = 48.sp,
+                    fontSize = 44.sp,
                     style = MaterialTheme.typography.displayMedium,
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                     fontWeight = FontWeight.Bold
@@ -211,35 +353,33 @@ private fun CounterInteractiveScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        Spacer(modifier = Modifier.height(28.dp))
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
+        Spacer(modifier = Modifier.height(24.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             FilledTonalButton(
                 onClick = {
                     count--
                     taps++
-                    onEmitLog(LogLevel.DEBUG, "CounterApp", "Decremented count to $count (taps: $taps)")
+                    onEmitLog(LogLevel.DEBUG, "CounterApp", "Decremented count to $count")
                 }
             ) {
-                Icon(Icons.Default.Remove, contentDescription = null, modifier = Modifier.size(18.dp))
+                Icon(Icons.Default.Remove, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(4.dp))
-                Text("Decrement")
+                Text("Dec")
             }
             Button(
                 onClick = {
                     count++
                     taps++
-                    onEmitLog(LogLevel.DEBUG, "CounterApp", "Incremented count to $count (taps: $taps)")
+                    onEmitLog(LogLevel.DEBUG, "CounterApp", "Incremented count to $count")
                 }
             ) {
-                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(4.dp))
-                Text("Increment")
+                Text("Inc")
             }
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(10.dp))
         OutlinedButton(
             onClick = {
                 count = 0
@@ -247,9 +387,9 @@ private fun CounterInteractiveScreen(
                 onEmitLog(LogLevel.INFO, "CounterApp", "Counter state reset to 0")
             }
         ) {
-            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
             Spacer(modifier = Modifier.width(4.dp))
-            Text("Reset State")
+            Text("Reset")
         }
     }
 }
@@ -272,9 +412,7 @@ private fun TaskCraftInteractiveScreen(
     }
     var newTitle by remember { mutableStateOf("") }
 
-    Column(
-        modifier = Modifier.fillMaxSize()
-    ) {
+    Column(modifier = Modifier.fillMaxSize()) {
         Surface(
             color = MaterialTheme.colorScheme.surfaceVariant,
             modifier = Modifier.fillMaxWidth()
@@ -282,7 +420,7 @@ private fun TaskCraftInteractiveScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
@@ -300,11 +438,11 @@ private fun TaskCraftInteractiveScreen(
         Column(
             modifier = Modifier
                 .weight(1f)
-                .padding(12.dp)
+                .padding(10.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 OutlinedTextField(
@@ -319,7 +457,7 @@ private fun TaskCraftInteractiveScreen(
                         if (newTitle.isNotBlank()) {
                             val item = TaskDemoItem(System.currentTimeMillis().toString(), newTitle.trim(), false)
                             tasks = listOf(item) + tasks
-                            onEmitLog(LogLevel.DEBUG, "TaskCraft", "Created task: '${item.title}'")
+                            onEmitLog(LogLevel.DEBUG, "TaskCraft", "Created: '${item.title}'")
                             newTitle = ""
                         }
                     }
@@ -328,20 +466,18 @@ private fun TaskCraftInteractiveScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
             LazyColumn(
                 verticalArrangement = Arrangement.spacedBy(6.dp),
                 modifier = Modifier.weight(1f)
             ) {
                 items(tasks, key = { it.id }) { task ->
-                    ElevatedCard(
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
+                    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(10.dp),
+                                .padding(8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
@@ -354,13 +490,13 @@ private fun TaskCraftInteractiveScreen(
                                 checked = task.isDone,
                                 onCheckedChange = { isChecked ->
                                     tasks = tasks.map { if (it.id == task.id) it.copy(isDone = isChecked) else it }
-                                    onEmitLog(LogLevel.DEBUG, "TaskCraft", "Task '${task.title}' updated isDone=$isChecked")
+                                    onEmitLog(LogLevel.DEBUG, "TaskCraft", "'${task.title}' updated isDone=$isChecked")
                                 }
                             )
                             IconButton(
                                 onClick = {
                                     tasks = tasks.filter { it.id != task.id }
-                                    onEmitLog(LogLevel.INFO, "TaskCraft", "Deleted task '${task.title}'")
+                                    onEmitLog(LogLevel.INFO, "TaskCraft", "Deleted '${task.title}'")
                                 },
                                 modifier = Modifier.size(24.dp)
                             ) {
@@ -390,7 +526,7 @@ private fun EmptyComposeInteractiveScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(24.dp),
+            .padding(20.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
@@ -398,22 +534,22 @@ private fun EmptyComposeInteractiveScreen(
             Icons.Default.Android,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(56.dp)
+            modifier = Modifier.size(48.dp)
         )
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(12.dp))
         Text(
             text = displayText,
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onSurface
         )
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(6.dp))
         Text(
             text = "Compose screen compiled & active",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(20.dp))
         Button(
             onClick = {
                 clickCount++

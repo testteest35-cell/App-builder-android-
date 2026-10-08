@@ -1,0 +1,128 @@
+name: Build & Release DroidIDE APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build Type (debug or release)'
+        required: true
+        default: 'debug'
+        type: choice
+        options:
+          - debug
+          - release
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          cache: 'gradle'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Prepare Debug Keystore
+        run: |
+          # If debug.keystore is tracked or base64 exists, decode it; otherwise generate standard debug keystore
+          if [ -f "debug.keystore.base64" ]; then
+            echo "Decoding debug.keystore from base64..."
+            base64 -d debug.keystore.base64 > debug.keystore
+          elif [ ! -f "debug.keystore" ]; then
+            echo "Generating fresh debug keystore for CI..."
+            keytool -genkey -v \
+              -keystore debug.keystore \
+              -alias androiddebugkey \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass android \
+              -keypass android \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+          touch .env || true
+
+      - name: Make Gradle Wrapper Executable
+        run: chmod +x gradlew
+
+      - name: Run Unit Tests
+        run: ./gradlew testDebugUnitTest --no-daemon --stacktrace
+
+      - name: Build Debug APK
+        if: "${{ github.event.inputs.build_type != 'release' }}"
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Build Release APK
+        if: "${{ github.event.inputs.build_type == 'release' }}"
+        run: |
+          # Use debug keystore for release artifact if no production secret keystore is provided
+          export STORE_PASSWORD="android"
+          export KEY_PASSWORD="android"
+          export KEYSTORE_PATH="$(pwd)/debug.keystore"
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Locate Output APK
+        id: find_apk
+        run: |
+          mkdir -p artifacts
+          APK_PATH=$(find app/build/outputs/apk -name "*.apk" | head -n 1)
+          if [ -z "$APK_PATH" ]; then
+            echo "Error: No APK found in app/build/outputs/apk"
+            exit 1
+          fi
+          echo "Found APK: $APK_PATH"
+          cp "$APK_PATH" artifacts/DroidIDE-app.apk
+          echo "apk_path=artifacts/DroidIDE-app.apk" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DroidIDE-apk
+          path: artifacts/DroidIDE-app.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: "startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')"
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/DroidIDE-app.apk
+          name: "DroidIDE ${{ github.ref_name }}"
+          body: |
+            ## 🚀 DroidIDE Native Android App
+            
+            Install directly on your Android phone or tablet:
+            1. Download `DroidIDE-app.apk` below directly on your mobile browser.
+            2. Tap the downloaded APK and select **Install** (allow *Install from Unknown Sources* if prompted).
+            3. Open DroidIDE and start building Android apps on the go!
+            
+            ### Included Features:
+            - Jetpack Compose & Views project templates
+            - Integrated mobile code editor with syntax highlighting
+            - GitHub clone, commit, push, and pull support
+            - SAF Project ZIP import & export
+            - Real-time build pipeline & on-device APK installer
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

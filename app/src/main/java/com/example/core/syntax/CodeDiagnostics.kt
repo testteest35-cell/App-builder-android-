@@ -51,47 +51,74 @@ object CodeDiagnostics {
                 for ((lineIdx, line) in lines.withIndex()) {
                     var inString = false
                     var inChar = false
-                    for (char in line) {
+                    var i = 0
+                    while (i < line.length) {
+                        val char = line[i]
+                        // Check for comment
+                        if (!inString && !inChar && char == '/' && i + 1 < line.length && line[i + 1] == '/') {
+                            break // Skip rest of line
+                        }
+
+                        if (char == '\\' && (inString || inChar)) {
+                            // Skip escaped char
+                            i += 2
+                            continue
+                        }
+
                         if (char == '"' && !inChar) inString = !inString
                         if (char == '\'' && !inString) inChar = !inChar
-                        if (inString || inChar) continue
 
-                        when (char) {
-                            '{', '(', '[' -> braceStack.push(char to (lineIdx + 1))
-                            '}' -> {
-                                if (braceStack.isEmpty() || braceStack.peek().first != '{') {
-                                    diagnostics.add(
-                                        DiagnosticItem(lineIdx + 1, "Unmatched closing brace '}'", DiagnosticSeverity.ERROR)
-                                    )
-                                } else {
-                                    braceStack.pop()
+                        if (!inString && !inChar) {
+                            when (char) {
+                                '{', '(', '[' -> braceStack.push(char to (lineIdx + 1))
+                                '}' -> {
+                                    if (braceStack.isEmpty() || braceStack.peek().first != '{') {
+                                        diagnostics.add(
+                                            DiagnosticItem(lineIdx + 1, "Unmatched closing brace '}'", DiagnosticSeverity.ERROR)
+                                        )
+                                    } else {
+                                        braceStack.pop()
+                                    }
                                 }
-                            }
-                            ')' -> {
-                                if (braceStack.isEmpty() || braceStack.peek().first != '(') {
-                                    diagnostics.add(
-                                        DiagnosticItem(lineIdx + 1, "Unmatched closing parenthesis ')'", DiagnosticSeverity.ERROR)
-                                    )
-                                } else {
-                                    braceStack.pop()
+                                ')' -> {
+                                    if (braceStack.isEmpty() || braceStack.peek().first != '(') {
+                                        diagnostics.add(
+                                            DiagnosticItem(lineIdx + 1, "Unmatched closing parenthesis ')'", DiagnosticSeverity.ERROR)
+                                        )
+                                    } else {
+                                        braceStack.pop()
+                                    }
                                 }
-                            }
-                            ']' -> {
-                                if (braceStack.isEmpty() || braceStack.peek().first != '[') {
-                                    diagnostics.add(
-                                        DiagnosticItem(lineIdx + 1, "Unmatched closing bracket ']'", DiagnosticSeverity.ERROR)
-                                    )
-                                } else {
-                                    braceStack.pop()
+                                ']' -> {
+                                    if (braceStack.isEmpty() || braceStack.peek().first != '[') {
+                                        diagnostics.add(
+                                            DiagnosticItem(lineIdx + 1, "Unmatched closing bracket ']'", DiagnosticSeverity.ERROR)
+                                        )
+                                    } else {
+                                        braceStack.pop()
+                                    }
                                 }
                             }
                         }
+                        i++
+                    }
+
+                    if (inString && !line.trim().startsWith("\"\"\"")) {
+                        diagnostics.add(
+                            DiagnosticItem(lineIdx + 1, "Unclosed string literal", DiagnosticSeverity.ERROR)
+                        )
                     }
                 }
                 while (braceStack.isNotEmpty()) {
                     val (char, line) = braceStack.pop()
+                    val name = when (char) {
+                        '{' -> "brace '{'"
+                        '(' -> "parenthesis '('"
+                        '[' -> "bracket '['"
+                        else -> "'$char'"
+                    }
                     diagnostics.add(
-                        DiagnosticItem(line, "Unclosed opening '${char}'", DiagnosticSeverity.ERROR)
+                        DiagnosticItem(line, "Unclosed opening $name", DiagnosticSeverity.ERROR)
                     )
                 }
             }
