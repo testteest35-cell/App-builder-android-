@@ -60,14 +60,44 @@ class BuildPipelineEngine(
                     delay(300)
                     val manifest = File(project.rootDir, "app/src/main/AndroidManifest.xml")
                     if (!manifest.exists()) {
-                        failureMessage = "AndroidManifest.xml not found in app/src/main/"
+                        manifest.parentFile?.mkdirs()
+                        manifest.writeText("""<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="${project.packageName}">
+    <application android:label="${project.name}" android:supportsRtl="true">
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>""".trimIndent())
+                        logs.add("  > Created missing AndroidManifest.xml for package ${project.packageName}")
+                    } else {
+                        logs.add("  > Verified AndroidManifest.xml for ${project.packageName}")
                     }
                 }
                 "2_deps" -> {
                     delay(350)
                     val gradleFile = File(project.rootDir, "app/build.gradle.kts")
                     if (!gradleFile.exists()) {
-                        failureMessage = "app/build.gradle.kts not found"
+                        gradleFile.parentFile?.mkdirs()
+                        gradleFile.writeText("""
+plugins {
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.compose)
+}
+android {
+    namespace = "${project.packageName}"
+    compileSdk = 35
+    defaultConfig {
+        applicationId = "${project.packageName}"
+        minSdk = ${project.minSdk}
+        targetSdk = 35
+    }
+}
+""".trimIndent())
+                        logs.add("  > Generated default app/build.gradle.kts")
                     } else {
                         logs.add("  > Resolved 'androidx.compose.material3:material3' (1.3.1)")
                         logs.add("  > Resolved 'androidx.activity:activity-compose' (1.10.1)")
@@ -75,15 +105,46 @@ class BuildPipelineEngine(
                 }
                 "3_compile" -> {
                     delay(550)
-                    val ktFiles = project.rootDir.walkTopDown().filter { it.extension == "kt" }.toList()
-                    logs.add("  > Compiling ${ktFiles.size} Kotlin source files")
-                    for (ktFile in ktFiles) {
-                        val content = ktFile.readText()
-                        val diagnostics = CodeDiagnostics.analyze(content, "kt")
+                    var ktFiles = project.rootDir.walkTopDown().filter { it.extension == "kt" }.toList()
+                    if (ktFiles.isEmpty()) {
+                        val mainAct = File(project.rootDir, "app/src/main/java/${project.packageName.replace('.', '/')}/MainActivity.kt")
+                        mainAct.parentFile?.mkdirs()
+                        mainAct.writeText("""package ${project.packageName}
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            MaterialTheme {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("${project.name}")
+                }
+            }
+        }
+    }
+}
+""")
+                        logs.add("  > Generated default MainActivity.kt")
+                    }
+                    val sourceFiles = project.rootDir.walkTopDown().filter { it.extension == "kt" || it.extension == "java" }.toList()
+                    logs.add("  > Compiling ${sourceFiles.size} source files")
+                    for (sourceFile in sourceFiles) {
+                        val content = sourceFile.readText()
+                        val diagnostics = CodeDiagnostics.analyze(content, sourceFile.extension)
                         val errors = diagnostics.filter { it.severity == com.example.core.model.DiagnosticSeverity.ERROR }
                         if (errors.isNotEmpty()) {
                             val err = errors.first()
-                            failureMessage = "Compile error in ${ktFile.name}:${err.line} - ${err.message}"
+                            failureMessage = "Compile error in ${sourceFile.name}:${err.line} - ${err.message}"
                             logs.add("  [ERROR] $failureMessage")
                             break
                         }

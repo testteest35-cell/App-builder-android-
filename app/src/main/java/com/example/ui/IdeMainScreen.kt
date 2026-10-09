@@ -406,6 +406,7 @@ fun IdeMainScreen(
             isBuilding = isBuilding,
             onInstallApk = { viewModel.installApk(context) },
             onShareApk = { viewModel.shareApk(context) },
+            onSaveToDownloads = { viewModel.saveApkToDownloads(context) },
             onDismiss = { viewModel.setBuildStatusDialogOpen(false) }
         )
     }

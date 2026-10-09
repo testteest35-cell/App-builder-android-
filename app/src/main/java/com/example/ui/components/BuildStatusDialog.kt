@@ -25,6 +25,7 @@ fun BuildStatusDialog(
     isBuilding: Boolean,
     onInstallApk: () -> Unit,
     onShareApk: () -> Unit,
+    onSaveToDownloads: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     AlertDialog(
@@ -124,7 +125,10 @@ fun BuildStatusDialog(
         },
         confirmButton = {
             if (result != null && result.success && result.apkFile != null) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Button(
                         onClick = onInstallApk,
                         colors = ButtonDefaults.buttonColors(containerColor = IdeGreen)
@@ -133,10 +137,13 @@ fun BuildStatusDialog(
                         Spacer(modifier = Modifier.width(4.dp))
                         Text("Install APK")
                     }
-                    FilledTonalButton(onClick = onShareApk) {
-                        Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                    FilledTonalButton(onClick = onSaveToDownloads) {
+                        Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Share")
+                        Text("Save")
+                    }
+                    OutlinedButton(onClick = onShareApk) {
+                        Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
                     }
                 }
             } else if (!isBuilding) {

@@ -48,25 +48,74 @@ object CodeDiagnostics {
         when (extension.lowercase()) {
             "kt", "kts", "java" -> {
                 val braceStack = Stack<Pair<Char, Int>>()
+                var inBlockComment = false
+                var inRawString = false
+
                 for ((lineIdx, line) in lines.withIndex()) {
                     var inString = false
                     var inChar = false
                     var i = 0
+
                     while (i < line.length) {
-                        val char = line[i]
-                        // Check for comment
-                        if (!inString && !inChar && char == '/' && i + 1 < line.length && line[i + 1] == '/') {
-                            break // Skip rest of line
+                        // Handle multiline block comment
+                        if (inBlockComment) {
+                            if (i + 1 < line.length && line[i] == '*' && line[i + 1] == '/') {
+                                inBlockComment = false
+                                i += 2
+                                continue
+                            }
+                            i++
+                            continue
                         }
 
-                        if (char == '\\' && (inString || inChar)) {
-                            // Skip escaped char
+                        // Handle multiline raw string """
+                        if (inRawString) {
+                            if (i + 2 < line.length && line[i] == '"' && line[i + 1] == '"' && line[i + 2] == '"') {
+                                inRawString = false
+                                i += 3
+                                continue
+                            }
+                            i++
+                            continue
+                        }
+
+                        // Check for start of raw string """
+                        if (!inString && !inChar && i + 2 < line.length && line[i] == '"' && line[i + 1] == '"' && line[i + 2] == '"') {
+                            inRawString = true
+                            i += 3
+                            continue
+                        }
+
+                        // Check for start of block comment /*
+                        if (!inString && !inChar && i + 1 < line.length && line[i] == '/' && line[i + 1] == '*') {
+                            inBlockComment = true
                             i += 2
                             continue
                         }
 
-                        if (char == '"' && !inChar) inString = !inString
-                        if (char == '\'' && !inString) inChar = !inChar
+                        // Check for single line comment //
+                        if (!inString && !inChar && i + 1 < line.length && line[i] == '/' && line[i + 1] == '/') {
+                            break // Skip remainder of the line
+                        }
+
+                        val char = line[i]
+
+                        // Handle escaped chars in regular string or char literal
+                        if (char == '\\' && (inString || inChar)) {
+                            i += 2
+                            continue
+                        }
+
+                        if (char == '"' && !inChar) {
+                            inString = !inString
+                            i++
+                            continue
+                        }
+                        if (char == '\'' && !inString) {
+                            inChar = !inChar
+                            i++
+                            continue
+                        }
 
                         if (!inString && !inChar) {
                             when (char) {
@@ -103,12 +152,19 @@ object CodeDiagnostics {
                         i++
                     }
 
-                    if (inString && !line.trim().startsWith("\"\"\"")) {
+                    if (inString && !inRawString) {
                         diagnostics.add(
                             DiagnosticItem(lineIdx + 1, "Unclosed string literal", DiagnosticSeverity.ERROR)
                         )
                     }
                 }
+
+                if (inRawString) {
+                    diagnostics.add(
+                        DiagnosticItem(lines.size, "Unclosed raw string literal \"\"\"", DiagnosticSeverity.ERROR)
+                    )
+                }
+
                 while (braceStack.isNotEmpty()) {
                     val (char, line) = braceStack.pop()
                     val name = when (char) {

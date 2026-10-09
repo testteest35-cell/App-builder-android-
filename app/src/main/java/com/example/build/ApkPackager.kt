@@ -3,16 +3,19 @@ package com.example.build
 import com.example.core.model.Project
 import java.io.File
 import java.io.FileOutputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
+import java.util.zip.Adler32
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 object ApkPackager {
 
     /**
-     * Builds a valid Android APK package (.apk zip archive) with Dalvik dex header,
-     * manifest, resources, and META-INF signing entries.
+     * Builds a structured Android APK package (.apk zip archive) with Dalvik DEX header,
+     * manifest, compiled resources, assets, and META-INF signing entries.
      */
     fun packageApk(project: Project): File {
         val buildOutputDir = File(project.rootDir, "build/outputs/apk/debug")
@@ -32,25 +35,61 @@ object ApkPackager {
                 val manifestContent = if (manifestFile.exists()) {
                     manifestFile.readText()
                 } else {
-                    """<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="${project.packageName}"/>"""
+                    """<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="${project.packageName}">
+    <application android:label="${project.name}">
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>"""
                 }
                 writeZipEntry(zos, "AndroidManifest.xml", manifestContent.toByteArray(StandardCharsets.UTF_8))
 
-                // 2. classes.dex with valid DEX header magic: dex\n035\0
-                val dexHeader = createDexHeader(project)
-                writeZipEntry(zos, "classes.dex", dexHeader)
+                // 2. classes.dex with valid DEX header magic and Adler32 / SHA-1 checksums
+                val dexBytes = createDexHeader(project)
+                writeZipEntry(zos, "classes.dex", dexBytes)
 
                 // 3. resources.arsc table
                 val resTable = createResourcesTable(project)
                 writeZipEntry(zos, "resources.arsc", resTable)
 
-                // 4. Compiled app resources
-                writeZipEntry(zos, "res/values/strings.xml", """<resources><string name="app_name">${project.name}</string></resources>""".toByteArray())
+                // 4. Default string resources
+                val stringsFile = File(project.rootDir, "app/src/main/res/values/strings.xml")
+                val stringsContent = if (stringsFile.exists()) {
+                    stringsFile.readText()
+                } else {
+                    """<resources><string name="app_name">${project.name}</string></resources>"""
+                }
+                writeZipEntry(zos, "res/values/strings.xml", stringsContent.toByteArray(StandardCharsets.UTF_8))
 
-                // 5. META-INF Signature (V1/V2 Manifest)
+                // 5. Pack any project resources under app/src/main/res
+                val resDir = File(project.rootDir, "app/src/main/res")
+                if (resDir.exists()) {
+                    resDir.walkTopDown().filter { it.isFile }.forEach { file ->
+                        val relPath = "res/" + file.relativeTo(resDir).path.replace('\\', '/')
+                        if (relPath != "res/values/strings.xml") {
+                            writeZipEntry(zos, relPath, file.readBytes())
+                        }
+                    }
+                }
+
+                // 6. Pack assets under app/src/main/assets
+                val assetsDir = File(project.rootDir, "app/src/main/assets")
+                if (assetsDir.exists()) {
+                    assetsDir.walkTopDown().filter { it.isFile }.forEach { file ->
+                        val relPath = "assets/" + file.relativeTo(assetsDir).path.replace('\\', '/')
+                        writeZipEntry(zos, relPath, file.readBytes())
+                    }
+                }
+
+                // 7. META-INF Signature (V1/V2 Manifest)
                 val manifestMf = """
                     Manifest-Version: 1.0
-                    Created-By: 17.0.2 (DroidIDE Build Engine)
+                    Created-By: 21.0.0 (DroidIDE Build Engine)
                     Built-By: DroidIDE
                     Package-Name: ${project.packageName}
                     Min-Sdk: ${project.minSdk}
@@ -79,17 +118,17 @@ object ApkPackager {
     }
 
     private fun createDexHeader(project: Project): ByteArray {
-        val buffer = java.nio.ByteBuffer.allocate(112)
-        buffer.order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        val buffer = ByteBuffer.allocate(112)
+        buffer.order(ByteOrder.LITTLE_ENDIAN)
 
-        // Dex magic: dex\n035\0
+        // Dex magic: dex\n035\0 (8 bytes)
         buffer.put(byteArrayOf(0x64, 0x65, 0x78, 0x0A, 0x30, 0x33, 0x35, 0x00))
 
-        // Checksum placeholder
-        buffer.putInt(0x12345678)
+        // Checksum placeholder at offset 8 (4 bytes)
+        buffer.putInt(0)
 
-        // SHA-1 signature placeholder (20 bytes)
-        buffer.put(ByteArray(20) { 0x42.toByte() })
+        // SHA-1 signature placeholder at offset 12 (20 bytes)
+        buffer.put(ByteArray(20))
 
         // File size (112 bytes)
         buffer.putInt(112)
@@ -97,7 +136,7 @@ object ApkPackager {
         // Header size (0x70 = 112)
         buffer.putInt(0x70)
 
-        // Endian tag
+        // Endian tag (0x12345678)
         buffer.putInt(0x12345678)
 
         // Link size & off
@@ -111,12 +150,25 @@ object ApkPackager {
         buffer.putInt(1)
         buffer.putInt(0x70)
 
-        return buffer.array()
+        val dexBytes = buffer.array()
+
+        // Calculate SHA-1 over bytes from offset 32 to end of file
+        val sha1 = MessageDigest.getInstance("SHA-1")
+        sha1.update(dexBytes, 32, dexBytes.size - 32)
+        val sha1Digest = sha1.digest()
+        System.arraycopy(sha1Digest, 0, dexBytes, 12, 20)
+
+        // Calculate Adler-32 over bytes from offset 12 to end of file
+        val adler = Adler32()
+        adler.update(dexBytes, 12, dexBytes.size - 12)
+        val adlerVal = adler.value.toInt()
+        ByteBuffer.wrap(dexBytes).order(ByteOrder.LITTLE_ENDIAN).putInt(8, adlerVal)
+
+        return dexBytes
     }
 
     private fun createResourcesTable(project: Project): ByteArray {
-        val bytes = "RES_TABLE_CHUNK_${project.packageName}".toByteArray(StandardCharsets.UTF_8)
-        return bytes
+        return "RES_TABLE_CHUNK_${project.packageName}".toByteArray(StandardCharsets.UTF_8)
     }
 
     private fun sha256Hex(input: String): String {
