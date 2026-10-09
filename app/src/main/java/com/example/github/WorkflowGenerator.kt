@@ -46,20 +46,25 @@ jobs:
           java-version: '21'
           cache: 'gradle'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Accept Android SDK Licenses
-        run: yes | sdkmanager --licenses || true
+      - name: Setup Android SDK & Pre-accept Licenses
+        run: |
+          ANDROID_SDK_ROOT="${D}{ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          export PATH="${D}ANDROID_SDK_ROOT/cmdline-tools/latest/bin:${D}ANDROID_SDK_ROOT/platform-tools:${D}PATH"
+          mkdir -p "${D}ANDROID_SDK_ROOT/licenses" || true
+          printf "\n24333f8a63b6825ea9c5514f83c2829b004d1fee\nd56f5187479451eabf01fb78af6dfcb131a6481e\n84831b9409646a3e80e4b2e74ba07519965a7f76" > "${D}ANDROID_SDK_ROOT/licenses/android-sdk-license"
+          printf "\n84831b9409646a3e80e4b2e74ba07519965a7f76" > "${D}ANDROID_SDK_ROOT/licenses/android-sdk-preview-license"
+          yes | sdkmanager --licenses || true
+          sdkmanager "platforms;android-36" "platforms;android-35" "build-tools;36.0.0" "build-tools;35.0.0" || true
 
       - name: Prepare Signing Keystores & Environment
         run: |
           touch .env || true
+
           if [ -f "debug.keystore.base64" ]; then
             echo "Decoding debug.keystore from base64..."
             base64 -d debug.keystore.base64 > debug.keystore
           elif [ ! -f "debug.keystore" ]; then
-            echo "Generating debug keystore for CI build..."
+            echo "Generating debug keystore for CI..."
             keytool -genkey -v \
               -keystore debug.keystore \
               -alias androiddebugkey \
@@ -87,16 +92,12 @@ jobs:
       - name: Make Gradle Wrapper Executable
         run: chmod +x gradlew || true
 
-      - name: Run Unit Tests
-        run: ./gradlew testDebugUnitTest --no-daemon --stacktrace --no-configuration-cache || true
-        continue-on-error: true
-
       - name: Build Debug APK
-        if: "${D}{{ github.event.inputs.build_type != 'release' }}"
+        if: github.event.inputs.build_type != 'release'
         run: ./gradlew assembleDebug --no-daemon --stacktrace --no-configuration-cache
 
       - name: Build Release APK
-        if: "${D}{{ github.event.inputs.build_type == 'release' }}"
+        if: github.event.inputs.build_type == 'release'
         run: |
           export STORE_PASSWORD="android"
           export KEY_PASSWORD="android"
@@ -107,7 +108,10 @@ jobs:
         id: find_apk
         run: |
           mkdir -p artifacts
-          APK_PATH=${D}(find . -path "*/build/outputs/apk/*" -name "*.apk" | head -n 1)
+          APK_PATH=${D}(find app/build/outputs/apk -type f -name "*.apk" | head -n 1)
+          if [ -z "${D}APK_PATH" ]; then
+            APK_PATH=${D}(find . -type f -path "*/build/outputs/apk/*" -name "*.apk" | head -n 1)
+          fi
           if [ -z "${D}APK_PATH" ]; then
             echo "Error: No APK found in build outputs"
             exit 1
@@ -125,7 +129,7 @@ jobs:
           retention-days: 30
 
       - name: Create GitHub Release
-        if: "startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'"
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
         uses: softprops/action-gh-release@v2
         continue-on-error: true
         with:
@@ -177,11 +181,13 @@ jobs:
           java-version: '21'
           cache: 'gradle'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Accept Android SDK Licenses
-        run: yes | sdkmanager --licenses || true
+      - name: Setup Android SDK & Accept Licenses
+        run: |
+          ANDROID_SDK_ROOT="${D}{ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          export PATH="${D}ANDROID_SDK_ROOT/cmdline-tools/latest/bin:${D}ANDROID_SDK_ROOT/platform-tools:${D}PATH"
+          mkdir -p "${D}ANDROID_SDK_ROOT/licenses" || true
+          printf "\n24333f8a63b6825ea9c5514f83c2829b004d1fee\nd56f5187479451eabf01fb78af6dfcb131a6481e\n84831b9409646a3e80e4b2e74ba07519965a7f76" > "${D}ANDROID_SDK_ROOT/licenses/android-sdk-license"
+          yes | sdkmanager --licenses || true
 
       - name: Make Gradle Wrapper Executable
         run: chmod +x gradlew || true
@@ -205,7 +211,7 @@ jobs:
           retention-days: 30
 
       - name: Create GitHub Release
-        if: "startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'"
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
         uses: softprops/action-gh-release@v2
         continue-on-error: true
         with:

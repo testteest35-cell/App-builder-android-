@@ -121,6 +121,35 @@ fun BuildStatusDialog(
                         }
                     }
                 }
+
+                if (result != null && !result.success) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Surface(
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        shape = MaterialTheme.shapes.small,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Build Failure Details",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = result.errorMessage ?: "Unknown error occurred during build",
+                                fontFamily = JetBrainsMonoFontFamily,
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                        }
+                    }
+                }
             }
         },
         confirmButton = {

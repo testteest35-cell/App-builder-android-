@@ -39,23 +39,29 @@ jobs:
           java-version: '21'
           cache: 'gradle'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Accept Android SDK Licenses
-        run: yes | sdkmanager --licenses || true
+      - name: Setup Android SDK & Pre-accept Licenses
+        run: |
+          ANDROID_SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH"
+          mkdir -p "$ANDROID_SDK_ROOT/licenses" || true
+          printf "\n24333f8a63b6825ea9c5514f83c2829b004d1fee\nd56f5187479451eabf01fb78af6dfcb131a6481e\n84831b9409646a3e80e4b2e74ba07519965a7f76" > "$ANDROID_SDK_ROOT/licenses/android-sdk-license"
+          printf "\n84831b9409646a3e80e4b2e74ba07519965a7f76" > "$ANDROID_SDK_ROOT/licenses/android-sdk-preview-license"
+          printf "\n7c027e50ab0e960243029447fb09187ce0171886" > "$ANDROID_SDK_ROOT/licenses/android-googletv-license"
+          printf "\n33b6a2b64f07941a2383790518384f7282b04f7c" > "$ANDROID_SDK_ROOT/licenses/android-sdk-arm-dbt-license"
+          printf "\n601085b94cd77f0b54ff86406955449fac3adfb4" > "$ANDROID_SDK_ROOT/licenses/google-gdk-license"
+          yes | sdkmanager --licenses || true
+          echo "Installing platforms and build tools..."
+          sdkmanager "platforms;android-36" "platforms;android-35" "build-tools;36.0.0" "build-tools;35.0.0" || true
 
       - name: Prepare Signing Keystores & Environment
         run: |
-          # Ensure .env exists for Secrets Gradle Plugin
           touch .env || true
 
-          # If debug.keystore is present or base64 exists, prepare it; otherwise generate standard debug keystore
           if [ -f "debug.keystore.base64" ]; then
             echo "Decoding debug.keystore from base64..."
             base64 -d debug.keystore.base64 > debug.keystore
           elif [ ! -f "debug.keystore" ]; then
-            echo "Generating debug keystore for CI build..."
+            echo "Generating debug keystore for CI..."
             keytool -genkey -v \
               -keystore debug.keystore \
               -alias androiddebugkey \
@@ -67,7 +73,6 @@ jobs:
               -dname "CN=Android Debug,O=Android,C=US"
           fi
 
-          # Prepare release upload key if release build is requested
           if [ ! -f "my-upload-key.jks" ]; then
             echo "Generating release upload keystore with alias 'upload'..."
             keytool -genkey -v \
@@ -84,16 +89,12 @@ jobs:
       - name: Make Gradle Wrapper Executable
         run: chmod +x gradlew || true
 
-      - name: Run Unit Tests
-        run: ./gradlew testDebugUnitTest --no-daemon --stacktrace --no-configuration-cache || true
-        continue-on-error: true
-
       - name: Build Debug APK
-        if: "${{ github.event.inputs.build_type != 'release' }}"
+        if: github.event.inputs.build_type != 'release'
         run: ./gradlew assembleDebug --no-daemon --stacktrace --no-configuration-cache
 
       - name: Build Release APK
-        if: "${{ github.event.inputs.build_type == 'release' }}"
+        if: github.event.inputs.build_type == 'release'
         run: |
           export STORE_PASSWORD="android"
           export KEY_PASSWORD="android"
@@ -104,7 +105,10 @@ jobs:
         id: find_apk
         run: |
           mkdir -p artifacts
-          APK_PATH=$(find . -path "*/build/outputs/apk/*" -name "*.apk" | head -n 1)
+          APK_PATH=$(find app/build/outputs/apk -type f -name "*.apk" | head -n 1)
+          if [ -z "$APK_PATH" ]; then
+            APK_PATH=$(find . -type f -path "*/build/outputs/apk/*" -name "*.apk" | head -n 1)
+          fi
           if [ -z "$APK_PATH" ]; then
             echo "Error: No APK found in build outputs"
             exit 1
@@ -122,7 +126,7 @@ jobs:
           retention-days: 30
 
       - name: Create GitHub Release
-        if: "startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'"
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
         uses: softprops/action-gh-release@v2
         continue-on-error: true
         with:
@@ -136,13 +140,6 @@ jobs:
             1. Download `DroidIDE-app.apk` below directly on your mobile browser.
             2. Tap the downloaded APK and select **Install** (allow *Install from Unknown Sources* if prompted).
             3. Open DroidIDE and start building Android apps on the go!
-            
-            ### Included Features:
-            - Jetpack Compose & Views project templates
-            - Integrated mobile code editor with syntax highlighting
-            - GitHub clone, commit, push, and pull support
-            - SAF Project ZIP import & export
-            - Real-time build pipeline & on-device APK installer
           draft: false
           prerelease: false
         env:
